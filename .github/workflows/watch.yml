@@ -1,0 +1,34 @@
+name: OVH VPS watch
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+permissions:
+  issues: write
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Check VPS-2 and VPS-3 (Linux) in Germany
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          found=""
+          for plan in vps-2027-model2 vps-2027-model3; do
+            json=$(curl -sf --max-time 20 "https://eu.api.ovh.com/v1/vps/order/rule/datacenter?ovhSubsidiary=PL&planCode=$plan" || echo '{}')
+            hit=$(echo "$json" | jq -r '.datacenters[]? | select(.datacenter=="DE" and .linuxStatus=="available") | .datacenter')
+            [ -n "$hit" ] && found="$found $plan"
+          done
+          echo "available in DE:${found:- none}"
+          [ -z "$found" ] && exit 0
+          # One open issue at a time, so the mail comes once per stock window.
+          open=$(gh issue list -R "$REPO" --label vps-available --state open --json number --jq 'length')
+          [ "$open" != "0" ] && exit 0
+          gh label create vps-available -R "$REPO" --color 0E8A16 2>/dev/null || true
+          names=$(echo "$found" | sed 's/vps-2027-model2/VPS-2/;s/vps-2027-model3/VPS-3/')
+          gh issue create -R "$REPO" --label vps-available --assignee Piotrb029 \
+            --title "OVH: dostępny$names w Niemczech" \
+            --body "Właśnie pojawił się$names (Linux) w centrum danych DE (Limburg). Zamów: https://www.ovhcloud.com/pl/vps/ — wybierz lokalizację Niemcy. Zamknij to zgłoszenie, żeby dostać kolejne powiadomienie przy następnej dostawie."
