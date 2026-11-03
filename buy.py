@@ -78,6 +78,9 @@ def main() -> int:
         application_secret=os.environ["OVH_APP_SECRET"],
         consumer_key=os.environ["OVH_CONSUMER_KEY"],
     )
+    if DRY_RUN:
+        cred = client.get("/auth/currentCredential")
+        print("credential status:", cred.get("status"), "rules:", [f"{r['method']} {r['path']}" for r in cred.get("rules", [])])
     errors = []
     for plan, name, cap in PLANS:
         if plan not in found:
