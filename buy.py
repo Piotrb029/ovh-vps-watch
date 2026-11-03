@@ -1,6 +1,8 @@
 """Buy one OVH VPS in Germany (DE, Limburg) the moment it is in stock.
 
-Owner consent 2026-11-03: „Vps2 w pierwszej kolejności vps3 tez bedzie ok, kupuj”.
+Owner consent 2026-11-03: „Vps2 w pierwszej kolejności vps3 tez bedzie ok, kupuj”; then „Obecny vps jest w niemczech
+wiec wszystko sie zgadza, pasuje mi taki uklad”: upgrade the current VPS in place first (same server, IP and data), buy a new
+one only when the upgrade is refused.
 Monthly billing without commitment, Ubuntu 24.04, paid with the account's preferred payment method.
 Buys at most once: an issue labelled `vps-bought` (open or closed) is the lock.
 """
@@ -62,6 +64,24 @@ def buy(client: ovh.Client, plan: str, cap: float) -> dict:
     return {"orderId": order.get("orderId"), "url": order.get("url"), "net": net, "plan": plan}
 
 
+def upgrade(client: ovh.Client, plan: str, cap: float) -> dict:
+    services = client.get("/order/upgrade/vps")
+    if len(services) != 1:
+        raise RuntimeError(f"upgrade: expected one VPS, found {services}")
+    service = services[0]
+    offers = [o.get("planCode") for o in client.get(f"/order/upgrade/vps/{service}")]
+    if plan not in offers:
+        raise RuntimeError(f"upgrade: {plan} not offered for {service} (offers: {offers})")
+    preview = client.get(f"/order/upgrade/vps/{service}/{plan}", quantity=1)
+    net = float(preview["order"]["prices"]["withoutTax"]["value"])
+    if net > cap:
+        raise RuntimeError(f"upgrade {plan}: price {net} PLN net is over the cap {cap}")
+    if DRY_RUN:
+        return {"dryRun": True, "net": net, "plan": plan, "service": service}
+    order = client.post(f"/order/upgrade/vps/{service}/{plan}", quantity=1, autoPayWithPreferredPaymentMethod=True)
+    return {"orderId": order["order"].get("orderId"), "url": order["order"].get("url"), "net": net, "plan": plan, "service": service}
+
+
 def main() -> int:
     found = sys.argv[1:]
     if not found:
@@ -85,26 +105,29 @@ def main() -> int:
     for plan, name, cap in PLANS:
         if plan not in found:
             continue
-        try:
-            result = buy(client, plan, cap)
-        except Exception as e:  # noqa: BLE001 - the next plan may still go through; every error is reported
-            errors.append(f"{name}: {e}")
-            continue
-        if result.get("dryRun"):
-            print(f"DRY RUN ok: {name}, {result['net']} PLN net, cart deleted")
+        for how, action in (("upgrade", upgrade), ("new", buy)):
+            try:
+                result = action(client, plan, cap)
+            except Exception as e:  # noqa: BLE001 - the next way or plan may still go through; every error is reported
+                errors.append(f"{name} ({how}): {e}")
+                continue
+            if result.get("dryRun"):
+                print(f"DRY RUN ok: {name} via {how}, {result['net']} PLN net, nothing ordered")
+                return 0
+            what = f"ulepszenie obecnego VPS {result['service']} do {name}" if how == "upgrade" else f"nowy {name} (DE Limburg, {OS})"
+            issue(
+                "vps-bought",
+                f"OVH: zamówione {name}" + (" (ulepszenie)" if how == "upgrade" else ""),
+                f"Bot zamówił: {what}, płatność miesięczna, {result['net']} zł netto teraz.\n"
+                f"Zamówienie: {result['orderId']}\n{result['url']}\n\n"
+                "Bot więcej nie zamówi, dopóki to zgłoszenie istnieje. Sprawdź płatność w panelu OVH.",
+            )
+            print(f"ordered {name} via {how}: order {result['orderId']}")
             return 0
-        issue(
-            "vps-bought",
-            f"OVH: kupiony {name} w Niemczech",
-            f"Bot kupił {name} (DE Limburg, {OS}, płatność miesięczna bez zobowiązania), {result['net']} zł netto.\n"
-            f"Zamówienie: {result['orderId']}\n{result['url']}\n\n"
-            "Bot więcej nie kupi, dopóki to zgłoszenie istnieje. Sprawdź płatność w panelu OVH.",
-        )
-        print(f"bought {name}: order {result['orderId']}")
-        return 0
     if errors:
-        issue("vps-buy-failed", "OVH: automatyczny zakup nie wyszedł", "Bot widział VPS w DE, ale zakup się nie udał:\n\n" + "\n".join(f"- {e}" for e in errors) + "\n\nZamów ręcznie: https://www.ovhcloud.com/pl/vps/")
         print("\n".join(errors))
+        if not DRY_RUN:
+            issue("vps-buy-failed", "OVH: automatyczne zamówienie nie wyszło", "Bot widział VPS w DE, ale zamówienie się nie udało:\n\n" + "\n".join(f"- {e}" for e in errors) + "\n\nZamów ręcznie w panelu OVH (VPS → zmień model) albo https://www.ovhcloud.com/pl/vps/")
         return 1
     return 0
 
