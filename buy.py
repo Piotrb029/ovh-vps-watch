@@ -41,6 +41,14 @@ def buy(client: ovh.Client, plan: str, cap: float) -> dict:
     client.post(f"/order/cart/{cart_id}/assign")
     item = client.post(f"/order/cart/{cart_id}/vps", planCode=plan, duration="P1M", pricingMode="default", quantity=1)
     item_id = item["itemId"]
+    # Mandatory addons of the 2027 range: Linux, local storage, daily backup with one day kept (the included ones).
+    picks = {"os": "option-linux", "storage": "option-storage-local-", "automatedBackup": "option-auto-backup-2027-1-"}
+    options = client.get(f"/order/cart/{cart_id}/vps/options", planCode=plan)
+    for family, prefix in picks.items():
+        match = [o["planCode"] for o in options if o.get("family") == family and o["planCode"].startswith(prefix)]
+        if not match:
+            raise RuntimeError(f"no {family} option starting with {prefix} for {plan}")
+        client.post(f"/order/cart/{cart_id}/vps/options", itemId=item_id, planCode=match[0], duration="P1M", pricingMode="default", quantity=1)
     wanted = {"vps_datacenter": DATACENTER, "vps_os": OS, "region": "europe"}
     done = set()
     for req in client.get(f"/order/cart/{cart_id}/item/{item_id}/requiredConfiguration"):
