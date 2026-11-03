@@ -114,7 +114,8 @@ def main() -> int:
     for plan, name, cap in PLANS:
         if plan not in found:
             continue
-        for how, action in (("upgrade", upgrade), ("new", buy)):
+        # Owner 2026-11-03: „Zadnych ulepszen” — no in-place upgrade, only a new VPS.
+        for how, action in (("new", buy),):
             try:
                 result = action(client, plan, cap)
             except Exception as e:  # noqa: BLE001 - the next way or plan may still go through; every error is reported
