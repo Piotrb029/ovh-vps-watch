@@ -3,17 +3,29 @@ on:
   schedule:
     - cron: '*/15 * * * *'
   workflow_dispatch:
+    inputs:
+      dry_run:
+        description: 'Test the purchase on DE stock without paying (cart is deleted)'
+        type: boolean
+        default: false
+      force_found:
+        description: 'Dry run only: pretend this plan is in stock (vps-2027-model2 or vps-2027-model3)'
+        type: string
+        default: ''
 permissions:
   issues: write
+# One run at a time, so two runs can never both buy.
+concurrency:
+  group: watch
+  cancel-in-progress: false
 jobs:
   check:
     runs-on: ubuntu-latest
-    timeout-minutes: 3
+    timeout-minutes: 4
     steps:
+      - uses: actions/checkout@v4
       - name: Check VPS-2 and VPS-3 (Linux) in Germany
-        env:
-          GH_TOKEN: ${{ github.token }}
-          REPO: ${{ github.repository }}
+        id: check
         run: |
           set -euo pipefail
           found=""
@@ -22,13 +34,34 @@ jobs:
             hit=$(echo "$json" | jq -r '.datacenters[]? | select(.datacenter=="DE" and .linuxStatus=="available") | .datacenter')
             [ -n "$hit" ] && found="$found $plan"
           done
+          if [ "${{ inputs.dry_run }}" = "true" ] && [ -n "${{ inputs.force_found }}" ]; then found=" ${{ inputs.force_found }}"; fi
           echo "available in DE:${found:- none}"
-          [ -z "$found" ] && exit 0
+          echo "found=$found" >> "$GITHUB_OUTPUT"
+      - name: Buy
+        if: steps.check.outputs.found != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          OVH_APP_KEY: ${{ secrets.OVH_APP_KEY }}
+          OVH_APP_SECRET: ${{ secrets.OVH_APP_SECRET }}
+          OVH_CONSUMER_KEY: ${{ secrets.OVH_CONSUMER_KEY }}
+        run: |
+          pip install --quiet ovh==1.2.0
+          python3 buy.py ${{ steps.check.outputs.found }}
+      - name: Notify
+        if: always() && steps.check.outputs.found != '' && inputs.dry_run != true
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          FOUND: ${{ steps.check.outputs.found }}
+        run: |
+          set -euo pipefail
           # One open issue at a time, so the mail comes once per stock window.
           open=$(gh issue list -R "$REPO" --label vps-available --state open --json number --jq 'length')
           [ "$open" != "0" ] && exit 0
           gh label create vps-available -R "$REPO" --color 0E8A16 2>/dev/null || true
-          names=$(echo "$found" | sed 's/vps-2027-model2/VPS-2/;s/vps-2027-model3/VPS-3/')
+          names=$(echo "$FOUND" | sed 's/vps-2027-model2/VPS-2/;s/vps-2027-model3/VPS-3/')
           gh issue create -R "$REPO" --label vps-available --assignee Piotrb029 \
             --title "OVH: dostępny$names w Niemczech" \
-            --body "Właśnie pojawił się$names (Linux) w centrum danych DE (Limburg). Zamów: https://www.ovhcloud.com/pl/vps/ — wybierz lokalizację Niemcy. Zamknij to zgłoszenie, żeby dostać kolejne powiadomienie przy następnej dostawie."
+            --body "Właśnie pojawił się$names (Linux) w centrum danych DE (Limburg). Jeśli bot ma klucze API, sam kupił (osobne zgłoszenie „kupiony”). Inaczej zamów: https://www.ovhcloud.com/pl/vps/ — wybierz lokalizację Niemcy. Zamknij to zgłoszenie, żeby dostać kolejne powiadomienie."
