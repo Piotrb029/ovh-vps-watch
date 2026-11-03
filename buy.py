@@ -42,16 +42,17 @@ def buy(client: ovh.Client, plan: str, cap: float) -> dict:
     item = client.post(f"/order/cart/{cart_id}/vps", planCode=plan, duration="P1M", pricingMode="default", quantity=1)
     item_id = item["itemId"]
     wanted = {"vps_datacenter": DATACENTER, "vps_os": OS, "region": "europe"}
+    done = set()
     for req in client.get(f"/order/cart/{cart_id}/item/{item_id}/requiredConfiguration"):
         label = req["label"]
         if label in wanted:
             client.post(f"/order/cart/{cart_id}/item/{item_id}/configuration", label=label, value=wanted[label])
+            done.add(label)
         elif req.get("required"):
             raise RuntimeError(f"unknown required configuration {label}")
-    for label in ("vps_os",):
-        configured = [c["label"] for c in client.get(f"/order/cart/{cart_id}/item/{item_id}/configuration")]
-        if label not in configured:
-            client.post(f"/order/cart/{cart_id}/item/{item_id}/configuration", label=label, value=wanted[label])
+    # The OS is optional in the catalogue, so it may not be listed as required; set it anyway.
+    if "vps_os" not in done:
+        client.post(f"/order/cart/{cart_id}/item/{item_id}/configuration", label="vps_os", value=OS)
     preview = client.get(f"/order/cart/{cart_id}/checkout")
     net = float(preview["prices"]["withoutTax"]["value"])
     if net > cap:
