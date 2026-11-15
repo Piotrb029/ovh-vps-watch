@@ -1,4 +1,11 @@
-"""Buy one OVH VPS in Germany (DE, Limburg) the moment it is in stock.
+"""Get one OVH VPS-3 in Europe the moment it is in stock.
+
+Owner 2026-11-16: „sprawdzał czy oferta VPS-3 z serwerem w Europie jest dostępna a jak się pojawi to ma ją kupić z systemem Linux”;
+„Rozliczenie miesięczne, lokalizacja dowolna oby Europa, cena maks 100zl, tak ubuntu”. The VPS-2 this bot bought on 2026-11-04 runs
+the project's checks, so the first try is to upgrade that server in place (same address, same setup); a new VPS-3 only when OVH
+refuses the upgrade. The cap is taken on the price WITH tax. Lock of this round: an issue labelled `vps3-bought`.
+
+Earlier round (kept for the record):
 
 Owner consent 2026-11-03: „Vps2 w pierwszej kolejności vps3 tez bedzie ok, kupuj”; then „Obecny vps jest w niemczech
 wiec wszystko sie zgadza, pasuje mi taki uklad”: upgrade the current VPS in place first (same server, IP and data), buy a new
@@ -15,10 +22,14 @@ import ovh
 
 REPO = os.environ["REPO"]
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
-# Net PLN per month; the catalogue on 2026-11-03 said 36.20 and 52.20 without commitment.
-PLANS = [("vps-2027-model2", "VPS-2", 37.0), ("vps-2027-model3", "VPS-3", 53.0)]
+# PLN per month WITH tax (owner: „cena maks 100zl”); the catalogue on 2026-11-03 said 52.20 net for VPS-3 without commitment.
+PLANS = [("vps-2027-model3", "VPS-3", 100.0)]
 OS = "Ubuntu 24.04"
-DATACENTER = "DE"
+# „Lokalizacja dowolna oby Europa”, in the order tried when several have stock.
+EUROPE = ["DE", "WAW", "GRA", "SBG", "EU-WEST-RBX", "EU-SOUTH-MIL", "UK"]
+LOCK = "vps3-bought"
+# The server to upgrade in place: the VPS-2 with the project's check runners (its host name on the box).
+UPGRADE_SERVICE = "vps-9d39ebe7"
 
 
 def gh(*args: str) -> str:
@@ -31,12 +42,12 @@ def issue(label: str, title: str, body: str) -> None:
 
 
 def already_bought() -> bool:
-    out = gh("issue", "list", "-R", REPO, "--label", "vps-bought", "--state", "all", "--json", "number")
+    out = gh("issue", "list", "-R", REPO, "--label", LOCK, "--state", "all", "--json", "number")
     return len(json.loads(out)) > 0
 
 
-def buy(client: ovh.Client, plan: str, cap: float) -> dict:
-    cart = client.post("/order/cart", ovhSubsidiary="PL", description="auto-buy VPS DE")
+def buy(client: ovh.Client, plan: str, cap: float, datacenter: str) -> dict:
+    cart = client.post("/order/cart", ovhSubsidiary="PL", description=f"auto-buy VPS-3 {datacenter}")
     cart_id = cart["cartId"]
     client.post(f"/order/cart/{cart_id}/assign")
     item = client.post(f"/order/cart/{cart_id}/vps", planCode=plan, duration="P1M", pricingMode="default", quantity=1)
@@ -49,7 +60,7 @@ def buy(client: ovh.Client, plan: str, cap: float) -> dict:
         if not match:
             raise RuntimeError(f"no {family} option starting with {prefix} for {plan}")
         client.post(f"/order/cart/{cart_id}/vps/options", itemId=item_id, planCode=match[0], duration="P1M", pricingMode="default", quantity=1)
-    wanted = {"vps_datacenter": DATACENTER, "vps_os": OS, "region": "europe"}
+    wanted = {"vps_datacenter": datacenter, "vps_os": OS, "region": "europe"}
     done = set()
     for req in client.get(f"/order/cart/{cart_id}/item/{item_id}/requiredConfiguration"):
         label = req["label"]
@@ -63,43 +74,47 @@ def buy(client: ovh.Client, plan: str, cap: float) -> dict:
         client.post(f"/order/cart/{cart_id}/item/{item_id}/configuration", label="vps_os", value=OS)
     preview = client.get(f"/order/cart/{cart_id}/checkout")
     net = float(preview["prices"]["withoutTax"]["value"])
-    if net > cap:
+    gross = float(preview["prices"]["withTax"]["value"])
+    if gross > cap:
         client.delete(f"/order/cart/{cart_id}")
-        raise RuntimeError(f"{plan}: price {net} PLN net is over the cap {cap}")
+        raise RuntimeError(f"{plan} in {datacenter}: price {gross} PLN with tax is over the cap {cap}")
     if DRY_RUN:
         client.delete(f"/order/cart/{cart_id}")
-        return {"dryRun": True, "net": net, "plan": plan}
+        return {"dryRun": True, "net": net, "gross": gross, "plan": plan, "where": datacenter}
     order = client.post(f"/order/cart/{cart_id}/checkout", autoPayWithPreferredPaymentMethod=True, waiveRetractationPeriod=False)
-    return {"orderId": order.get("orderId"), "url": order.get("url"), "net": net, "plan": plan}
+    return {"orderId": order.get("orderId"), "url": order.get("url"), "net": net, "gross": gross, "plan": plan, "where": datacenter}
 
 
-def upgrade(client: ovh.Client, plan: str, cap: float) -> dict:
-    services = client.get("/order/upgrade/vps")
+def upgrade(client: ovh.Client, plan: str, cap: float, datacenter: str) -> dict:
+    # The account holds more than one VPS now; only the one with the check runners is upgraded, never the panel's server.
+    services = [s for s in client.get("/order/upgrade/vps") if s.startswith(UPGRADE_SERVICE)]
     if len(services) != 1:
-        raise RuntimeError(f"upgrade: expected one VPS, found {services}")
+        raise RuntimeError(f"upgrade: no single VPS named {UPGRADE_SERVICE}* among the upgradable ones")
     service = services[0]
     offers = [o.get("planCode") for o in client.get(f"/order/upgrade/vps/{service}")]
     if plan not in offers:
         raise RuntimeError(f"upgrade: {plan} not offered for {service} (offers: {offers})")
     preview = client.get(f"/order/upgrade/vps/{service}/{plan}", quantity=1)
     net = float(preview["order"]["prices"]["withoutTax"]["value"])
-    if net > cap:
-        raise RuntimeError(f"upgrade {plan}: price {net} PLN net is over the cap {cap}")
+    gross = float(preview["order"]["prices"]["withTax"]["value"])
+    if gross > cap:
+        raise RuntimeError(f"upgrade {plan}: price {gross} PLN with tax is over the cap {cap}")
     if DRY_RUN:
-        return {"dryRun": True, "net": net, "plan": plan, "service": service}
+        return {"dryRun": True, "net": net, "gross": gross, "plan": plan, "service": service, "where": service}
     order = client.post(f"/order/upgrade/vps/{service}/{plan}", quantity=1, autoPayWithPreferredPaymentMethod=True)
-    return {"orderId": order["order"].get("orderId"), "url": order["order"].get("url"), "net": net, "plan": plan, "service": service}
+    return {"orderId": order["order"].get("orderId"), "url": order["order"].get("url"), "net": net, "gross": gross, "plan": plan, "service": service, "where": service}
 
 
 def main() -> int:
-    found = sys.argv[1:]
-    if not found:
+    # Arguments: „plan@datacenter” for every place the watch saw stock in.
+    seen = [a.split("@", 1) for a in sys.argv[1:] if "@" in a]
+    if not seen:
         return 0
     if not all(os.environ.get(k) for k in ("OVH_APP_KEY", "OVH_APP_SECRET", "OVH_CONSUMER_KEY")):
         print("no OVH API keys: notify only")
         return 0
     if already_bought():
-        print("already bought (vps-bought issue exists): notify only")
+        print(f"already bought ({LOCK} issue exists): notify only")
         return 0
     client = ovh.Client(
         endpoint="ovh-eu",
@@ -112,22 +127,26 @@ def main() -> int:
         print("credential status:", cred.get("status"), "rules:", [f"{r['method']} {r['path']}" for r in cred.get("rules", [])])
     errors = []
     for plan, name, cap in PLANS:
-        if plan not in found:
+        places = [dc for dc in EUROPE if [plan, dc] in seen]
+        if not places:
             continue
-        for how, action in (("upgrade", upgrade), ("new", buy)):
+        # The upgrade once, then a new server in each place that has stock.
+        ways = [("upgrade", upgrade, places[0])] + [("new", buy, dc) for dc in places]
+        for how, action, where in ways:
             try:
-                result = action(client, plan, cap)
-            except Exception as e:  # noqa: BLE001 - the next way or plan may still go through; every error is reported
-                errors.append(f"{name} ({how}): {e}")
+                result = action(client, plan, cap, where)
+            except Exception as e:  # noqa: BLE001 - the next way or place may still go through; every error is reported
+                errors.append(f"{name} ({how}, {where}): {e}")
                 continue
             if result.get("dryRun"):
-                print(f"DRY RUN ok: {name} via {how}, {result['net']} PLN net, nothing ordered")
-                return 0
-            what = f"ulepszenie obecnego VPS {result['service']} do {name}" if how == "upgrade" else f"nowy {name} (DE Limburg, {OS})"
+                # A dry run shows every way, so the owner sees both prices before the bot is armed.
+                print(f"DRY RUN ok: {name} via {how} ({result['where']}), {result['net']} PLN net, {result['gross']} PLN with tax, nothing ordered")
+                continue
+            what = f"ulepszenie obecnego VPS {result['service']} do {name}" if how == "upgrade" else f"nowy {name} ({where}, {OS})"
             issue(
-                "vps-bought",
+                LOCK,
                 f"OVH: zamówione {name}" + (" (ulepszenie)" if how == "upgrade" else ""),
-                f"Bot zamówił: {what}, płatność miesięczna, {result['net']} zł netto teraz.\n"
+                f"Bot zamówił: {what}, płatność miesięczna, {result['net']} zł netto ({result['gross']} zł z podatkiem) teraz.\n"
                 f"Zamówienie: {result['orderId']}\n{result['url']}\n\n"
                 "Bot więcej nie zamówi, dopóki to zgłoszenie istnieje. Sprawdź płatność w panelu OVH.",
             )
@@ -136,8 +155,8 @@ def main() -> int:
     if errors:
         print("\n".join(errors))
         if not DRY_RUN:
-            issue("vps-buy-failed", "OVH: automatyczne zamówienie nie wyszło", "Bot widział VPS w DE, ale zamówienie się nie udało:\n\n" + "\n".join(f"- {e}" for e in errors) + "\n\nZamów ręcznie w panelu OVH (VPS → zmień model) albo https://www.ovhcloud.com/pl/vps/")
-        return 1
+            issue("vps-buy-failed", "OVH: automatyczne zamówienie VPS-3 nie wyszło", "Bot widział VPS-3 w Europie, ale zamówienie się nie udało:\n\n" + "\n".join(f"- {e}" for e in errors) + "\n\nZamów ręcznie w panelu OVH albo popraw bota.")
+        return 1 if not DRY_RUN else 0
     return 0
 
 
