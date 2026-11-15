@@ -42,7 +42,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          DRY_RUN: ${{ inputs.dry_run && '1' || '0' }}
+          # Pays only when the repository variable ARMED is 1 (set after the owner saw the dry run's prices); until then every run is a dry run.
+          DRY_RUN: ${{ (inputs.dry_run || vars.ARMED != '1') && '1' || '0' }}
           OVH_APP_KEY: ${{ secrets.OVH_APP_KEY }}
           OVH_APP_SECRET: ${{ secrets.OVH_APP_SECRET }}
           OVH_CONSUMER_KEY: ${{ secrets.OVH_CONSUMER_KEY }}
