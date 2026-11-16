@@ -126,6 +126,7 @@ def main() -> int:
         cred = client.get("/auth/currentCredential")
         print("credential status:", cred.get("status"), "rules:", [f"{r['method']} {r['path']}" for r in cred.get("rules", [])])
     errors = []
+    ordered = False
     got_vps3 = already_bought("vps3-bought")
     for plan, name, cap, lock, upgrade_first in PLANS:
         places = [dc for dc in EUROPE if [plan, dc] in seen]
@@ -151,18 +152,20 @@ def main() -> int:
                 lock,
                 f"OVH: zamówione {name}" + (" (ulepszenie)" if how == "upgrade" else ""),
                 f"Bot zamówił: {what}, płatność miesięczna, {result['net']} zł netto ({result['gross']} zł z podatkiem) teraz.\n"
-                f"Zamówienie: {result['orderId']}\n{result['url']}\n\n"
+                f"Numer zamówienia: {result['orderId']} (szczegóły w panelu OVH, Rozliczenia, Zamówienia).\n\n"
                 f"Bot nie zamówi drugi raz {name}, dopóki to zgłoszenie istnieje. Sprawdź płatność w panelu OVH.",
             )
             print(f"ordered {name} via {how}: order {result['orderId']}")
+            ordered = True
             if plan == "vps-2027-model3":
                 got_vps3 = True
             break
     if errors:
         print("\n".join(errors))
-        if not DRY_RUN:
+        # A way that failed before another one went through (the upgrade, then a new server) is not a failed purchase.
+        if not DRY_RUN and not ordered:
             issue("vps-buy-failed", "OVH: automatyczne zamówienie nie wyszło", "Bot widział VPS w Europie, ale zamówienie się nie udało:\n\n" + "\n".join(f"- {e}" for e in errors) + "\n\nZamów ręcznie w panelu OVH albo popraw bota.")
-        return 1 if not DRY_RUN else 0
+        return 1 if not DRY_RUN and not ordered else 0
     return 0
 
 

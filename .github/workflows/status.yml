@@ -1,0 +1,26 @@
+name: order-status
+# Read-only: prints the state of one order and of the payment methods (no card data, address or link). Started by hand.
+on:
+  workflow_dispatch:
+    inputs:
+      order:
+        description: OVH order number
+        required: true
+permissions:
+  contents: read
+jobs:
+  status:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Order and payment state
+        env:
+          OVH_APP_KEY: ${{ secrets.OVH_APP_KEY }}
+          OVH_APP_SECRET: ${{ secrets.OVH_APP_SECRET }}
+          OVH_CONSUMER_KEY: ${{ secrets.OVH_CONSUMER_KEY }}
+          ORDER: ${{ inputs.order }}
+        run: |
+          case "$ORDER" in ''|*[!0-9]*) echo "order must be a number"; exit 1 ;; esac
+          pip install --quiet ovh==1.2.0
+          python3 status.py "$ORDER"
