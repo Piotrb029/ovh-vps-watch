@@ -1,7 +1,8 @@
 """Get one OVH VPS-3 in Europe the moment it is in stock.
 
 Owner 2026-11-16: „sprawdzał czy oferta VPS-3 z serwerem w Europie jest dostępna a jak się pojawi to ma ją kupić z systemem Linux”;
-„Rozliczenie miesięczne, lokalizacja dowolna oby Europa, cena maks 100zl, tak ubuntu”. The VPS-2 this bot bought on 2026-11-04 runs
+„Rozliczenie miesięczne, lokalizacja dowolna oby Europa, cena maks 100zl, tak ubuntu”; then „1. Zgoda, 2. Londyn też, 3. Dajmy 80zl”
+(the upgrade first, London counts, the cap is 80). The VPS-2 this bot bought on 2026-11-04 runs
 the project's checks, so the first try is to upgrade that server in place (same address, same setup); a new VPS-3 only when OVH
 refuses the upgrade. The cap is taken on the price WITH tax. Lock of this round: an issue labelled `vps3-bought`.
 
@@ -22,8 +23,8 @@ import ovh
 
 REPO = os.environ["REPO"]
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
-# PLN per month WITH tax (owner: „cena maks 100zl”); the catalogue on 2026-11-03 said 52.20 net for VPS-3 without commitment.
-PLANS = [("vps-2027-model3", "VPS-3", 100.0)]
+# PLN per month WITH tax (owner 2026-11-16: „cena maks 100zl”, then „Dajmy 80zl”); the dry run of that night gave 52.20 net, 64.21 with tax.
+PLANS = [("vps-2027-model3", "VPS-3", 80.0)]
 OS = "Ubuntu 24.04"
 # „Lokalizacja dowolna oby Europa”, in the order tried when several have stock.
 EUROPE = ["DE", "WAW", "GRA", "SBG", "EU-WEST-RBX", "EU-SOUTH-MIL", "UK"]
