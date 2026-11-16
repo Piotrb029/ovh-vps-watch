@@ -24,18 +24,19 @@ jobs:
     timeout-minutes: 4
     steps:
       - uses: actions/checkout@v4
-      - name: Check VPS-3 (Linux) in Europe
+      - name: Check VPS-3 and VPS-2 (Linux) in Europe
         id: check
         run: |
           set -euo pipefail
           found=""
-          plan=vps-2027-model3
-          json=$(curl -sf --max-time 20 "https://eu.api.ovh.com/v1/vps/order/rule/datacenter?ovhSubsidiary=PL&planCode=$plan" || echo '{}')
-          for dc in $(echo "$json" | jq -r '.datacenters[]? | select(.linuxStatus=="available") | .datacenter'); do
-            case "$dc" in DE|WAW|GRA|SBG|EU-WEST-RBX|EU-SOUTH-MIL|UK) found="$found $plan@$dc" ;; esac
+          for plan in vps-2027-model3 vps-2027-model2; do
+            json=$(curl -sf --max-time 20 "https://eu.api.ovh.com/v1/vps/order/rule/datacenter?ovhSubsidiary=PL&planCode=$plan" || echo '{}')
+            for dc in $(echo "$json" | jq -r '.datacenters[]? | select(.linuxStatus=="available") | .datacenter'); do
+              case "$dc" in DE|WAW|GRA|SBG|EU-WEST-RBX|EU-SOUTH-MIL|UK) found="$found $plan@$dc" ;; esac
+            done
           done
           if [ "${{ inputs.dry_run }}" = "true" ] && [ -n "${{ inputs.force_found }}" ]; then found=" ${{ inputs.force_found }}"; fi
-          echo "VPS-3 in stock in Europe:${found:- none}"
+          echo "in stock in Europe:${found:- none}"
           echo "found=$found" >> "$GITHUB_OUTPUT"
       - name: Buy
         if: steps.check.outputs.found != ''
@@ -63,5 +64,5 @@ jobs:
           [ "$open" != "0" ] && exit 0
           gh label create vps3-available -R "$REPO" --color 0E8A16 2>/dev/null || true
           gh issue create -R "$REPO" --label vps3-available --assignee Piotrb029 \
-            --title "OVH: dostępny VPS-3 w Europie" \
-            --body "Właśnie pojawił się VPS-3 (Linux):$FOUND. Jeśli bot ma klucze API, sam zamówił (osobne zgłoszenie „zamówione VPS-3”): najpierw ulepszenie obecnego VPS-2, a gdy OVH odmówi, nowy serwer. Inaczej zamów ręcznie: https://www.ovhcloud.com/pl/vps/ Zamknij to zgłoszenie, żeby dostać kolejne powiadomienie."
+            --title "OVH: dostępny VPS w Europie" \
+            --body "Właśnie pojawił się VPS (Linux):$FOUND. Jeśli bot ma klucze API, sam zamówił (osobne zgłoszenie „zamówione …”): VPS-3 najpierw jako ulepszenie obecnego VPS-2, a gdy OVH odmówi, nowy serwer; drugi VPS-2 tylko wtedy, gdy VPS-3 jeszcze nie ma. Inaczej zamów ręcznie: https://www.ovhcloud.com/pl/vps/ Zamknij to zgłoszenie, żeby dostać kolejne powiadomienie."

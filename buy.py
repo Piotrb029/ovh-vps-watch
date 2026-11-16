@@ -24,11 +24,13 @@ import ovh
 REPO = os.environ["REPO"]
 DRY_RUN = os.environ.get("DRY_RUN") == "1"
 # PLN per month WITH tax (owner 2026-11-16: „cena maks 100zl”, then „Dajmy 80zl”); the dry run of that night gave 52.20 net, 64.21 with tax.
-PLANS = [("vps-2027-model3", "VPS-3", 80.0)]
+# Then (same night): „To zrób zeby mógł kupić też vps-2 drugi. Lepszy rydz jak nic”, „drugi vps-2 ma nie wykluczyć Update lub zakupu
+# vps-3”: a second VPS-2 is a fallback with its own lock; it never stops the VPS-3, and it is not bought once the VPS-3 is.
+# (plan, name, cap with tax, lock label, try the in-place upgrade first). VPS-2 was 36.20 net (44.53 with tax) on 2026-11-03.
+PLANS = [("vps-2027-model3", "VPS-3", 80.0, "vps3-bought", True), ("vps-2027-model2", "VPS-2", 50.0, "vps2-second-bought", False)]
 OS = "Ubuntu 24.04"
 # „Lokalizacja dowolna oby Europa”, in the order tried when several have stock.
 EUROPE = ["DE", "WAW", "GRA", "SBG", "EU-WEST-RBX", "EU-SOUTH-MIL", "UK"]
-LOCK = "vps3-bought"
 # The server to upgrade in place: the VPS-2 with the project's check runners (its host name on the box).
 UPGRADE_SERVICE = "vps-9d39ebe7"
 
@@ -42,13 +44,13 @@ def issue(label: str, title: str, body: str) -> None:
     gh("issue", "create", "-R", REPO, "--label", label, "--assignee", "Piotrb029", "--title", title, "--body", body)
 
 
-def already_bought() -> bool:
-    out = gh("issue", "list", "-R", REPO, "--label", LOCK, "--state", "all", "--json", "number")
+def already_bought(label: str) -> bool:
+    out = gh("issue", "list", "-R", REPO, "--label", label, "--state", "all", "--json", "number")
     return len(json.loads(out)) > 0
 
 
 def buy(client: ovh.Client, plan: str, cap: float, datacenter: str) -> dict:
-    cart = client.post("/order/cart", ovhSubsidiary="PL", description=f"auto-buy VPS-3 {datacenter}")
+    cart = client.post("/order/cart", ovhSubsidiary="PL", description=f"auto-buy {plan} {datacenter}")
     cart_id = cart["cartId"]
     client.post(f"/order/cart/{cart_id}/assign")
     item = client.post(f"/order/cart/{cart_id}/vps", planCode=plan, duration="P1M", pricingMode="default", quantity=1)
@@ -114,9 +116,6 @@ def main() -> int:
     if not all(os.environ.get(k) for k in ("OVH_APP_KEY", "OVH_APP_SECRET", "OVH_CONSUMER_KEY")):
         print("no OVH API keys: notify only")
         return 0
-    if already_bought():
-        print(f"already bought ({LOCK} issue exists): notify only")
-        return 0
     client = ovh.Client(
         endpoint="ovh-eu",
         application_key=os.environ["OVH_APP_KEY"],
@@ -127,12 +126,16 @@ def main() -> int:
         cred = client.get("/auth/currentCredential")
         print("credential status:", cred.get("status"), "rules:", [f"{r['method']} {r['path']}" for r in cred.get("rules", [])])
     errors = []
-    for plan, name, cap in PLANS:
+    got_vps3 = already_bought("vps3-bought")
+    for plan, name, cap, lock, upgrade_first in PLANS:
         places = [dc for dc in EUROPE if [plan, dc] in seen]
         if not places:
             continue
-        # The upgrade once, then a new server in each place that has stock.
-        ways = [("upgrade", upgrade, places[0])] + [("new", buy, dc) for dc in places]
+        if already_bought(lock) or (plan != "vps-2027-model3" and got_vps3):
+            print(f"{name}: not needed any more ({lock} or vps3-bought exists)")
+            continue
+        # The upgrade once (VPS-3 only), then a new server in each place that has stock.
+        ways = ([("upgrade", upgrade, places[0])] if upgrade_first else []) + [("new", buy, dc) for dc in places]
         for how, action, where in ways:
             try:
                 result = action(client, plan, cap, where)
@@ -140,23 +143,25 @@ def main() -> int:
                 errors.append(f"{name} ({how}, {where}): {e}")
                 continue
             if result.get("dryRun"):
-                # A dry run shows every way, so the owner sees both prices before the bot is armed.
+                # A dry run shows every way, so the owner sees the prices before the bot is armed.
                 print(f"DRY RUN ok: {name} via {how} ({result['where']}), {result['net']} PLN net, {result['gross']} PLN with tax, nothing ordered")
                 continue
             what = f"ulepszenie obecnego VPS {result['service']} do {name}" if how == "upgrade" else f"nowy {name} ({where}, {OS})"
             issue(
-                LOCK,
+                lock,
                 f"OVH: zamówione {name}" + (" (ulepszenie)" if how == "upgrade" else ""),
                 f"Bot zamówił: {what}, płatność miesięczna, {result['net']} zł netto ({result['gross']} zł z podatkiem) teraz.\n"
                 f"Zamówienie: {result['orderId']}\n{result['url']}\n\n"
-                "Bot więcej nie zamówi, dopóki to zgłoszenie istnieje. Sprawdź płatność w panelu OVH.",
+                f"Bot nie zamówi drugi raz {name}, dopóki to zgłoszenie istnieje. Sprawdź płatność w panelu OVH.",
             )
             print(f"ordered {name} via {how}: order {result['orderId']}")
-            return 0
+            if plan == "vps-2027-model3":
+                got_vps3 = True
+            break
     if errors:
         print("\n".join(errors))
         if not DRY_RUN:
-            issue("vps-buy-failed", "OVH: automatyczne zamówienie VPS-3 nie wyszło", "Bot widział VPS-3 w Europie, ale zamówienie się nie udało:\n\n" + "\n".join(f"- {e}" for e in errors) + "\n\nZamów ręcznie w panelu OVH albo popraw bota.")
+            issue("vps-buy-failed", "OVH: automatyczne zamówienie nie wyszło", "Bot widział VPS w Europie, ale zamówienie się nie udało:\n\n" + "\n".join(f"- {e}" for e in errors) + "\n\nZamów ręcznie w panelu OVH albo popraw bota.")
         return 1 if not DRY_RUN else 0
     return 0
 
